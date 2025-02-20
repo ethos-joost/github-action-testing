@@ -1,0 +1,81 @@
+name: Create Confluence Release Page
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  create-confluence-page:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get release information
+        id: release
+        run: |
+          echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+      - name: Login to Jira
+        uses: atlassian/gajira-login@v3
+        env:
+          JIRA_BASE_URL: ${{ secrets.CONFLUENCE_BASE_URL }}
+          JIRA_API_TOKEN: ${{ secrets.CONFLUENCE_API_TOKEN }}
+          JIRA_USER_EMAIL: ${{ secrets.CONFLUENCE_USER_EMAIL }}
+
+      - name: Create Confluence page
+        env:
+          CONFLUENCE_BASE_URL: ${{ secrets.CONFLUENCE_BASE_URL }}
+          CONFLUENCE_API_TOKEN: ${{ secrets.CONFLUENCE_API_TOKEN }}
+          CONFLUENCE_USER_EMAIL: ${{ secrets.CONFLUENCE_USER_EMAIL }}
+          CONFLUENCE_SPACE_KEY: ${{ secrets.CONFLUENCE_SPACE_KEY }}
+        run: |
+          RELEASE_TAG="${{ steps.release.outputs.tag }}"
+          RELEASE_DATE="${{ steps.release.outputs.date }}"
+          RELEASE_BODY="${{ github.event.release.body }}"
+
+          # Convert release notes to table rows
+          TABLE_ROWS=""
+          while IFS= read -r line; do
+            # Skip empty lines
+            if [ -z "$line" ]; then
+              continue
+            fi
+            # Remove leading bullet points and spaces
+            line="${line#"${line%%[! ]*}"}"  # trim leading spaces
+            line="${line#"*"}"               # remove bullet point
+            line="${line#"${line%%[! ]*}"}"  # trim spaces after bullet
+            if [ ! -z "$line" ]; then
+              TABLE_ROWS="${TABLE_ROWS}<tr><td>${line}</td></tr>"
+            fi
+          done <<< "$RELEASE_BODY"
+
+          # Create page content in Confluence storage format
+          CONTENT="<h1>Release ${RELEASE_TAG}</h1>
+          <p><strong>Release Date:</strong> ${RELEASE_DATE}</p>
+          <h2>Release Notes</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Changes</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${TABLE_ROWS}
+            </tbody>
+          </table>"
+
+          # Create the page using Confluence REST API
+          curl -X POST \
+            -H "Authorization: Bearer ${CONFLUENCE_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            "${CONFLUENCE_BASE_URL}/wiki/api/v2/pages" \
+            -d '{
+              "spaceId": "'"${CONFLUENCE_SPACE_KEY}"'",
+              "status": "current",
+              "title": "Release '"${RELEASE_TAG}"'",
+              "body": {
+                "representation": "storage",
+                "value": "'"${CONTENT}"'"
+              }
+            }'
